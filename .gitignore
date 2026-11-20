@@ -16,3 +16,7 @@ data/pages/
 node_modules/
 .next/
 .vercel/
+
+# TypeScript
+next-env.d.ts
+*.tsbuildinfo
