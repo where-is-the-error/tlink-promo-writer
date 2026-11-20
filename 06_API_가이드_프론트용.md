@@ -143,13 +143,15 @@
 
 - **DB 추가분**: `ai_calls`, `card_conflicts`, `app_owner` 테이블과 `posts.rewrite_count`·`is_eval`·`injection_notes`, `materials.status` 등을 추가했습니다. SQL에 `[추가]`로 표시해 뒀습니다.
 - **명세에 없던 라우트**: `GET /api/posts`, `GET /api/posts/:id`, `GET /api/learning/rules`, `PATCH /api/learning/rules/:id`, `GET /api/eval/run`.
-- **흰 글씨 탐지 없음**: 웹 등록은 1pt 이하 글자와 지시문 판별(Haiku)만 합니다. OCR 비교는 구현하지 않았습니다.
-- **쪽 밖 글자 미탐지**: 쪽 영역 밖 글자는 테스트에서 숨은 글자로 잡히지 않았습니다. 이런 글자가 든 쪽은 카드 생성용 PDF에 그대로 들어갈 수 있습니다.
-- **큰 PDF는 텍스트로 대체**: 카드 생성 때 PDF 합계가 20MB를 넘거나 원본이 없으면 쪽별 텍스트 블록으로 넣습니다. 쪽 번호는 여전히 Citations 인용 위치에서만 나옵니다.
+- **흰 글씨 탐지 없음**: 웹 등록은 1pt 이하 글자와 지시문 판별(Gemini)만 합니다. OCR 비교는 구현하지 않았습니다.
+- **AI는 전부 Gemini**: 명세의 Claude·Voyage 대신 Gemini(`@google/genai`)를 씁니다. 키는 `GEMINI_API_KEY` 하나입니다. API 요청·응답 형식은 바뀌지 않았습니다.
+- **카드 쪽 번호는 코드가 확인**: Claude Citations 대신, AI가 낸 인용문이 쪽 원문에 글자 그대로 있는지 코드가 찾아 그 쪽 번호만 저장합니다. 원문에서 못 찾은 인용과 인용 없는 카드는 버립니다.
+- **카드 생성은 쪽 텍스트만 사용**: PDF의 텍스트 레이어만 넣습니다. 그림 안에만 있는 글자는 카드 근거가 되지 못합니다.
 - **회사소개서 등록 불가**: `티링크_회사소개서.pdf`가 237MB라 등록 상한 50MB에 걸립니다. 압축하거나 로컬 등록 스크립트가 필요합니다. (Vercel 배포에서는 요청 본문 한도가 더 작아 업로드 가능한 크기가 더 줄어듭니다.)
 - **PPTX 업로드 미지원**: 웹은 PDF만 받습니다. PPTX는 PDF로 바꿔서 올립니다.
 - **검색 함수**: `match_pages`의 부분 일치를 `similarity` 대신 `word_similarity`로 바꿨습니다.
-- **Voyage 모델**: 기본값 `voyage-3.5`(1024차원). `VOYAGE_MODEL`로 바꿀 수 있습니다.
+- **모델**: 기본값은 `gemini-3.8-flash`(카드·검증·분류·글 쓰기), `gemini-3.5-flash-lite`(지시문 판별), 임베딩 `gemini-embedding-001`(1024차원). `.env.local`의 `GEMINI_MODEL_*`로 바꿀 수 있습니다.
+- **비용 상한은 단가를 넣어야 동작**: `GEMINI_PRICE_INPUT_PER_MTOK`·`GEMINI_PRICE_OUTPUT_PER_MTOK`를 비워 두면 비용이 0으로 기록되고 `cost_cap_reached`가 걸리지 않습니다.
 - **평가 사례 없음**: `/api/eval/run`은 `eval/cases/E-xx/`가 있어야 동작하는데 아직 사례 파일이 없습니다. `expected.json` 형식은 `lib/eval.ts` 상단 주석에 있습니다.
 - **아직 없는 것**: `scripts/ingest.ts`(PPTX 변환·xlsx 파싱), 화면 8개, 로그인 화면.
-- **미검증**: 타입 검사·빌드·단위 테스트는 통과했지만 실제 Supabase·Claude·Voyage에 연결해 돌려 보지는 않았습니다. 붙이다가 이상한 응답이 나오면 바로 알려 주세요.
+- **미검증**: 타입 검사·빌드·단위 테스트는 통과했지만 실제 Supabase·Gemini에 연결해 돌려 보지는 않았습니다. 붙이다가 이상한 응답이 나오면 바로 알려 주세요.

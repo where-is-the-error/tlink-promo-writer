@@ -1,23 +1,29 @@
-import { db, env, must } from "./db";
+import { ApiError as GeminiApiError } from "@google/genai";
+import { genai } from "./ai/client";
+import { db, must } from "./db";
 import { ApiError } from "./http";
 
-/** Voyage 임베딩(1024차원). 모델은 VOYAGE_MODEL로 바꿀 수 있다. */
+/** Gemini 임베딩(1024차원 — DB의 vector(1024)와 맞춘다). 모델은 GEMINI_EMBEDDING_MODEL로 바꿀 수 있다. */
 export async function embed(texts: string[], inputType: "document" | "query"): Promise<number[][]> {
   const out: number[][] = [];
-  for (let i = 0; i < texts.length; i += 32) {
-    const res = await fetch("https://api.voyageai.com/v1/embeddings", {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${env("VOYAGE_API_KEY")}` },
-      body: JSON.stringify({
-        input: texts.slice(i, i + 32),
-        model: process.env.VOYAGE_MODEL || "voyage-3.5",
-        input_type: inputType,
-        output_dimension: 1024,
-      }),
-    });
-    if (!res.ok) throw new ApiError(502, "embedding_error", `임베딩 실패(${res.status})`);
-    const json = (await res.json()) as { data: { embedding: number[]; index: number }[] };
-    for (const d of json.data.sort((a, b) => a.index - b.index)) out.push(d.embedding);
+  try {
+    for (let i = 0; i < texts.length; i += 32) {
+      const res = await genai().models.embedContent({
+        model: process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001",
+        contents: texts.slice(i, i + 32),
+        config: {
+          taskType: inputType === "document" ? "RETRIEVAL_DOCUMENT" : "RETRIEVAL_QUERY",
+          outputDimensionality: 1024,
+        },
+      });
+      for (const e of res.embeddings ?? []) out.push(e.values ?? []);
+    }
+  } catch (e) {
+    const status = e instanceof GeminiApiError ? e.status : "?";
+    throw new ApiError(502, "embedding_error", `임베딩 실패(${status})`);
+  }
+  if (out.length !== texts.length || out.some((v) => v.length !== 1024)) {
+    throw new ApiError(502, "embedding_error", "임베딩 결과가 요청과 맞지 않습니다.");
   }
   return out;
 }

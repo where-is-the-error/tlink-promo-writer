@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { compact } from "../text";
 import type { Evidence, Verdict } from "../types";
-import { callClaude, MODELS } from "./client";
+import { callModel, MODELS } from "./client";
 import { tag, VERIFY_CHECKLIST_NOTE, VERIFY_SYSTEM } from "./prompts";
 
 const ResultSchema = z.object({
@@ -47,7 +47,7 @@ export interface VerifyInput {
 }
 
 /**
- * 6-4 원문 대조 검증 — Opus 5.5, effort high, 구조화 출력.
+ * 6-4 원문 대조 검증 — Gemini(pro), 구조화 출력.
  * 글 쓰기 프롬프트와 카드 생성 프롬프트는 넣지 않는다(글을 쓴 AI와 별도 호출).
  */
 export async function verifySentences(input: VerifyInput): Promise<VerifyResult> {
@@ -65,12 +65,11 @@ export async function verifySentences(input: VerifyInput): Promise<VerifyResult>
     }`,
   ].join("\n\n");
 
-  const { parsed } = await callClaude({
+  const parsed = await callModel({
     purpose: input.full ? "verify" : "verify_sentence",
-    model: MODELS.opus,
-    effort: "high",
+    model: MODELS.pro,
     system: VERIFY_SYSTEM,
-    content: [{ type: "text", text }],
+    parts: [{ text }],
     schema: input.full ? FullSchema : PartialSchema,
     postId: input.postId,
   });

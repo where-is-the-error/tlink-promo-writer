@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Guideline } from "../types";
-import { callClaude, MODELS } from "./client";
+import { callModel, MODELS } from "./client";
 import { cardTag, tag, WRITE_SYSTEM } from "./prompts";
 
 export const WriteSchema = z.object({
@@ -34,7 +34,7 @@ export interface WriteInput {
   rules: { banned_phrases: string[]; preferred_intros: string[] };
 }
 
-/** 6-3 글 쓰기 — Sonnet 5.5, effort medium, 구조화 출력. 하단 정보·기본 해시태그는 코드가 붙인다. */
+/** 6-3 글 쓰기 — Gemini(flash), 구조화 출력. 하단 정보·기본 해시태그는 코드가 붙인다. */
 export async function writeDraft(input: WriteInput): Promise<WriteResult> {
   const g = input.guideline;
   const guidelineText = [
@@ -64,12 +64,11 @@ export async function writeDraft(input: WriteInput): Promise<WriteResult> {
     "위 카드·사진·메모만으로 5단계 후기형 글을 써 줘.",
   ].join("\n\n");
 
-  const { parsed } = await callClaude({
+  const parsed = await callModel({
     purpose: "write",
-    model: MODELS.sonnet,
-    effort: "medium",
+    model: MODELS.flash,
     system: WRITE_SYSTEM,
-    content: [{ type: "text", text }],
+    parts: [{ text }],
     schema: WriteSchema,
     postId: input.postId,
   });

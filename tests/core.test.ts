@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCardsResponse } from "../lib/ai/cards";
+import { verifyCardQuotes } from "../lib/ai/cards";
 import { checkEvidence } from "../lib/ai/verify";
 import { buildExport, runCodeChecks, type CheckInput } from "../lib/checks";
 import { bannedFromEdits, cardScores, reactionScore, removedTokens } from "../lib/learning";
@@ -80,22 +80,37 @@ describe("코드 검사(8장)", () => {
   });
 });
 
-describe("카드 파싱(6-1)", () => {
-  it("카드 구간의 인용 위치에서만 쪽을 모으고, 인용 없는 카드는 버린다", () => {
-    const { cards, conflicts } = parseCardsResponse([
-      { type: "text", text: "[CARD]\n주장: " },
-      {
-        type: "text",
-        text: "휴대폰·인터넷전화·PC폰 통화를 한 서버에 녹음한다",
-        citations: [{ type: "page_location", document_index: 0, start_page_number: 3, end_page_number: 4, cited_text: "하나의 서버" }],
-      },
-      { type: "text", text: "\n이익: 외근 통화도 이력에 남는다\n조건: 없음\n[/CARD]\n[CARD]\n주장: 인용 없는 주장\n이익: 없음\n조건: 없음\n[/CARD]\n" },
-      { type: "text", text: "[CONFLICT]\n특허 번호가 쪽마다 다르다\n[/CONFLICT]" },
-    ]);
-    expect(cards).toHaveLength(1);
-    expect(cards[0]).toMatchObject({ claim: "휴대폰·인터넷전화·PC폰 통화를 한 서버에 녹음한다", condition: null });
-    expect(cards[0].citations).toEqual([{ document_index: 0, position: 2, cited_text: "하나의 서버" }]);
-    expect(conflicts).toEqual(["특허 번호가 쪽마다 다르다"]);
+describe("카드 인용 실재 확인(6-1)", () => {
+  const pages = [
+    { material_id: "m1", material: "제안서", page_no: 3, text: "인터넷전화 + 휴대폰 + PC 소프트폰\n하나의 서버, 고객별 하나의 이력" },
+    { material_id: "m1", material: "제안서", page_no: 6, text: "같은 이슈가 3회 반복되면 RED 알림" },
+    { material_id: "m2", material: "PC폰 매뉴얼", page_no: 9, text: "녹음은 삼성 070 계정에서만 가능합니다" },
+  ];
+  const card = (quotes: { material: string; page_no: number; quote: string }[], condition: string | null = null) => ({
+    claim: "세 채널 통화를 한 서버에 녹음한다",
+    benefit: "외근 통화도 이력에 남는다",
+    condition,
+    quotes,
+  });
+
+  it("원문에 있는 인용만 남기고, AI가 틀리게 적은 쪽 번호는 실제 쪽으로 고친다", () => {
+    const [c] = verifyCardQuotes(
+      [
+        card([
+          { material: "제안서", page_no: 3, quote: "하나의 서버, 고객별 하나의 이력" },
+          { material: "제안서", page_no: 3, quote: "3회 반복되면 RED 알림" }, // 실제로는 6쪽
+          { material: "제안서", page_no: 3, quote: "삼성 070 계정에서만 가능" }, // 실제로는 다른 자료
+          { material: "제안서", page_no: 3, quote: "고객 이탈 위험을 알려 준다" }, // 원문에 없음
+        ], "없음"),
+      ],
+      pages,
+    );
+    expect(c.condition).toBeNull();
+    expect(c.citations.map((x) => [x.material_id, x.page_no])).toEqual([["m1", 3], ["m1", 6], ["m2", 9]]);
+  });
+
+  it("확인된 인용이 하나도 없는 카드는 버린다", () => {
+    expect(verifyCardQuotes([card([{ material: "제안서", page_no: 3, quote: "업계 1위 솔루션입니다" }]), card([])], pages)).toEqual([]);
   });
 });
 

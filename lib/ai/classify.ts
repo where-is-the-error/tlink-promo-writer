@@ -1,6 +1,5 @@
-import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
-import { callClaude, MODELS } from "./client";
+import { callModel, MODELS, type Part } from "./client";
 import { cardTag, CLASSIFY_SYSTEM, tag } from "./prompts";
 
 export const ClassifySchema = z.object({
@@ -24,21 +23,21 @@ export interface PhotoInput {
   base64: string;
 }
 
-/** 6-2 사진 분류 + 카드 추천 — Sonnet 5.5, effort medium, 구조화 출력. */
+/** 6-2 사진 분류 + 카드 추천 — Gemini(flash), 구조화 출력. */
 export async function classifyPhotos(input: {
   postId: string;
   memo: string;
   photos: PhotoInput[];
   cards: { code: string; claim: string; benefit: string; condition: string | null }[];
 }): Promise<ClassifyResult> {
-  const content: Anthropic.Beta.BetaContentBlockParam[] = [];
+  const parts: Part[] = [];
   for (const p of input.photos) {
-    content.push({ type: "text", text: `<photo id="${p.id}">` });
-    content.push({ type: "image", source: { type: "base64", media_type: p.mediaType, data: p.base64 } });
-    content.push({ type: "text", text: "</photo>" });
+    parts.push({ text: `<photo id="${p.id}">` });
+    parts.push({ inlineData: { mimeType: p.mediaType, data: p.base64 } });
+    parts.push({ text: "</photo>" });
   }
-  content.push({
-    type: "text",
+  parts.push({
+
     text: [
       tag("memo", input.memo),
       `<cards>\n${input.cards.map(cardTag).join("\n")}\n</cards>`,
@@ -46,12 +45,11 @@ export async function classifyPhotos(input: {
     ].join("\n\n"),
   });
 
-  const { parsed } = await callClaude({
+  const parsed = await callModel({
     purpose: "classify",
-    model: MODELS.sonnet,
-    effort: "medium",
+    model: MODELS.flash,
     system: CLASSIFY_SYSTEM,
-    content,
+    parts,
     schema: ClassifySchema,
     postId: input.postId,
     maxTokens: 16000,

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { callClaude, MODELS } from "./client";
+import { callModel, MODELS } from "./client";
 import { INSTRUCTION_SYSTEM, INTRO_TYPE_SYSTEM, safe } from "./prompts";
 
 const FlagsSchema = z.object({
@@ -10,15 +10,14 @@ function numbered(sentences: string[]): string {
   return `<sentences>\n${sentences.map((s, i) => `${i + 1}. ${safe(s)}`).join("\n")}\n</sentences>`;
 }
 
-/** 6-5 지시문 판별 — Haiku 5.5, effort low, 구조화 출력. 걸린 문장과 이유를 돌려준다. */
+/** 6-5 지시문 판별 — Gemini(lite), 구조화 출력. 걸린 문장과 이유를 돌려준다. */
 export async function detectInstructions(sentences: string[]): Promise<{ sentence: string; reason: string }[]> {
   if (sentences.length === 0) return [];
-  const { parsed } = await callClaude({
+  const parsed = await callModel({
     purpose: "instruction_detect",
-    model: MODELS.haiku,
-    effort: "low",
+    model: MODELS.lite,
     system: INSTRUCTION_SYSTEM,
-    content: [{ type: "text", text: numbered(sentences) }],
+    parts: [{ text: numbered(sentences) }],
     schema: FlagsSchema,
     maxTokens: 8000,
   });
@@ -32,15 +31,14 @@ const IntroSchema = z.object({
 });
 export type IntroType = "question" | "number" | "situation";
 
-/** 12장 선호 도입부: 첫 문장 유형 분류(Haiku). 입력 순서대로 유형을 돌려준다(분류 실패는 null). */
+/** 12장 선호 도입부: 첫 문장 유형 분류(Gemini lite). 입력 순서대로 유형을 돌려준다(분류 실패는 null). */
 export async function classifyIntros(sentences: string[]): Promise<(IntroType | null)[]> {
   if (sentences.length === 0) return [];
-  const { parsed } = await callClaude({
+  const parsed = await callModel({
     purpose: "intro_type",
-    model: MODELS.haiku,
-    effort: "low",
+    model: MODELS.lite,
     system: INTRO_TYPE_SYSTEM,
-    content: [{ type: "text", text: numbered(sentences) }],
+    parts: [{ text: numbered(sentences) }],
     schema: IntroSchema,
     maxTokens: 4000,
   });

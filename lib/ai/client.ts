@@ -1,43 +1,50 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
-import type { z } from "zod";
-import { db } from "../db";
+import { ApiError as GeminiApiError, GoogleGenAI, type Part } from "@google/genai";
+import { z } from "zod";
+import { db, env } from "../db";
 import { ApiError } from "../http";
 
+/**
+ * 역할별 모델. 환경 변수로 바꿀 수 있다.
+ * - pro: 카드 생성·원문 대조(가장 정확해야 하는 호출)
+ * - flash: 사진 분류·글 쓰기
+ * - lite: 지시문 판별·도입부 유형 분류
+ */
 export const MODELS = {
-  opus: "claude-opus-5-5",
-  sonnet: "claude-sonnet-5-5",
-  haiku: "claude-haiku-5-5",
-} as const;
-export type Model = (typeof MODELS)[keyof typeof MODELS];
-export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
-
-/** 100만 토큰당 달러. 캐시 읽기는 모델별 고정가, 캐시 쓰기는 입력가의 1.25배. */
-const PRICES: Record<string, { input: number; output: number; cacheRead: number }> = {
-  "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2 },
-  "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5 },
-  "claude-sonnet-5-5": { input: 2, output: 10, cacheRead: 0.1 },
-  "claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2 },
-  "claude-haiku-5-5": { input: 0.1, output: 0.5, cacheRead: 0.01 },
+  get pro() {
+    return process.env.GEMINI_MODEL_PRO || "gemini-3.8-flash";
+  },
+  get flash() {
+    return process.env.GEMINI_MODEL_FLASH || "gemini-3.8-flash";
+  },
+  get lite() {
+    return process.env.GEMINI_MODEL_LITE || "gemini-3.5-flash-lite";
+  },
 };
 
-let client: Anthropic | null = null;
-function anthropic(): Anthropic {
-  client ??= new Anthropic();
+export type { Part };
+
+let client: GoogleGenAI | null = null;
+export function genai(): GoogleGenAI {
+  client ??= new GoogleGenAI({ apiKey: env("GEMINI_API_KEY") });
   return client;
 }
 
-export function costUsd(model: string, usage: Anthropic.Beta.BetaUsage): number {
-  const p = PRICES[model] ?? PRICES[MODELS.opus];
-  const cacheWrite = usage.cache_creation_input_tokens ?? 0;
-  const cacheRead = usage.cache_read_input_tokens ?? 0;
-  return (
-    (usage.input_tokens * p.input +
-      cacheWrite * p.input * 1.25 +
-      cacheRead * p.cacheRead +
-      usage.output_tokens * p.output) /
-    1_000_000
-  );
+interface Usage {
+  promptTokenCount?: number;
+  candidatesTokenCount?: number;
+  thoughtsTokenCount?: number;
+  cachedContentTokenCount?: number;
+}
+
+/**
+ * 100만 토큰당 달러 단가는 환경 변수로 넣는다(모델·요금제마다 달라 코드에 박아 두지 않는다).
+ * 단가를 넣지 않으면 비용은 0으로 기록되고 글 1건 비용 상한도 걸리지 않는다. 토큰 수는 항상 기록된다.
+ */
+export function costUsd(usage: Usage): number {
+  const input = Number(process.env.GEMINI_PRICE_INPUT_PER_MTOK ?? "0");
+  const output = Number(process.env.GEMINI_PRICE_OUTPUT_PER_MTOK ?? "0");
+  const out = (usage.candidatesTokenCount ?? 0) + (usage.thoughtsTokenCount ?? 0);
+  return ((usage.promptTokenCount ?? 0) * input + out * output) / 1_000_000;
 }
 
 /** 글 1건의 AI 비용이 상한(COST_CAP_PER_POST_USD)에 닿으면 추가 호출을 막는다. */
@@ -54,64 +61,70 @@ export async function assertBudget(postId: string): Promise<void> {
   }
 }
 
-interface CallOptions<S extends z.ZodType | undefined> {
+interface CallOptions<S extends z.ZodType> {
   purpose: string;
-  model: Model;
-  effort: Effort;
+  model: string;
   system: string;
-  content: Anthropic.Beta.BetaContentBlockParam[];
-  schema?: S;
+  parts: Part[];
+  schema: S;
   postId?: string;
   maxTokens?: number;
 }
 
-interface CallResult<S extends z.ZodType | undefined> {
-  message: Anthropic.Beta.BetaMessage;
-  parsed: S extends z.ZodType ? z.infer<S> : undefined;
+/** zod 스키마 → 응답용 JSON 스키마. `$schema`와 정수의 안전 범위 한계값처럼 불필요한 키는 뺀다. */
+export function jsonSchema(schema: z.ZodType): unknown {
+  const strip = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(strip);
+    if (!node || typeof node !== "object") return node;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "$schema") continue;
+      if ((key === "minimum" || key === "maximum") && Math.abs(Number(value)) >= Number.MAX_SAFE_INTEGER) continue;
+      out[key] = strip(value);
+    }
+    return out;
+  };
+  return strip(z.toJSONSchema(schema));
 }
 
 /**
- * 모든 Claude 호출이 지나는 한 곳.
- * - tools 없음(권한 최소화). JSON이 필요하면 구조화 출력만 쓴다.
- * - 스트리밍 + finalMessage()로 받는다.
- * - Opus·Sonnet은 server-side fallback을 켠다(Haiku 5.5는 미지원).
- * - 거절(stop_reason === "refusal")을 먼저 확인하고, 호출마다 ai_calls 로그를 남긴다.
+ * 모든 Gemini 호출이 지나는 한 곳.
+ * - tools 없음(권한 최소화). 출력은 JSON 스키마로 고정한 구조화 출력만 쓴다.
+ * - 스트리밍으로 받아 이어 붙인다(긴 응답의 타임아웃 방지).
+ * - 차단·잘림(finishReason)을 먼저 확인하고, 호출마다 ai_calls 로그를 남긴다.
  */
-export async function callClaude<S extends z.ZodType | undefined = undefined>(
-  o: CallOptions<S>,
-): Promise<CallResult<S>> {
+export async function callModel<S extends z.ZodType>(o: CallOptions<S>): Promise<z.infer<S>> {
   if (o.postId) await assertBudget(o.postId);
   const started = Date.now();
-  const withFallback = o.model !== MODELS.haiku;
 
-  let message: Anthropic.Beta.BetaMessage;
+  let text = "";
+  let usage: Usage = {};
+  let finish: string | undefined;
+  let blocked: string | undefined;
   try {
-    message = await anthropic()
-      .beta.messages.stream({
-        model: o.model,
-        max_tokens: o.maxTokens ?? 32000,
-        system: o.system,
-        messages: [{ role: "user", content: o.content }],
-        output_config: {
-          effort: o.effort,
-          ...(o.schema ? { format: betaZodOutputFormat(o.schema) } : {}),
-        },
-        ...(withFallback
-          ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const }
-          : {}),
-      })
-      .finalMessage();
+    const stream = await genai().models.generateContentStream({
+      model: o.model,
+      contents: [{ role: "user", parts: o.parts }],
+      config: {
+        systemInstruction: o.system,
+        responseMimeType: "application/json",
+        responseJsonSchema: jsonSchema(o.schema),
+        maxOutputTokens: o.maxTokens ?? 32000,
+      },
+    });
+    for await (const chunk of stream) {
+      text += chunk.text ?? "";
+      usage = chunk.usageMetadata ?? usage;
+      finish = chunk.candidates?.[0]?.finishReason ?? finish;
+      blocked = chunk.promptFeedback?.blockReason ?? blocked;
+    }
   } catch (e) {
-    if (e instanceof Anthropic.RateLimitError) {
-      throw new ApiError(429, "ai_rate_limited", "AI 요청이 많아 잠시 후 다시 시도해야 합니다.");
+    if (e instanceof GeminiApiError) {
+      if (e.status === 429) throw new ApiError(429, "ai_rate_limited", "AI 요청이 많아 잠시 후 다시 시도해야 합니다.");
+      throw new ApiError(502, "ai_error", `AI 호출 실패(${e.status}): ${e.message}`);
     }
-    if (e instanceof Anthropic.APIConnectionError) {
-      throw new ApiError(503, "ai_unreachable", "AI 서버에 연결하지 못했습니다.");
-    }
-    if (e instanceof Anthropic.APIError) {
-      throw new ApiError(502, "ai_error", `AI 호출 실패(${e.status ?? "?"}): ${e.message}`);
-    }
-    throw e;
+    if (e instanceof ApiError) throw e;
+    throw new ApiError(503, "ai_unreachable", "AI 서버에 연결하지 못했습니다.");
   }
 
   await db()
@@ -119,33 +132,22 @@ export async function callClaude<S extends z.ZodType | undefined = undefined>(
     .insert({
       post_id: o.postId ?? null,
       purpose: o.purpose,
-      model: message.model,
-      input_tokens: message.usage.input_tokens,
-      output_tokens: message.usage.output_tokens,
-      cache_read_tokens: message.usage.cache_read_input_tokens ?? 0,
-      cache_write_tokens: message.usage.cache_creation_input_tokens ?? 0,
-      cost_usd: costUsd(message.model, message.usage),
+      model: o.model,
+      input_tokens: usage.promptTokenCount ?? 0,
+      output_tokens: (usage.candidatesTokenCount ?? 0) + (usage.thoughtsTokenCount ?? 0),
+      cache_read_tokens: usage.cachedContentTokenCount ?? 0,
+      cost_usd: costUsd(usage),
       duration_ms: Date.now() - started,
     });
 
-  if (message.stop_reason === "refusal") {
+  if (blocked || (finish && !["STOP", "MAX_TOKENS"].includes(finish))) {
     throw new ApiError(502, "ai_refusal", "AI가 이 요청을 처리하지 않았습니다. 입력을 확인해 주세요.");
   }
-  if (message.stop_reason === "max_tokens") {
-    throw new ApiError(502, "ai_truncated", "AI 응답이 길이 제한으로 잘렸습니다.");
-  }
+  if (finish === "MAX_TOKENS") throw new ApiError(502, "ai_truncated", "AI 응답이 길이 제한으로 잘렸습니다.");
 
-  let parsed: unknown = undefined;
-  if (o.schema) {
-    const text = message.content
-      .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
-      .map((b) => b.text)
-      .join("");
-    try {
-      parsed = o.schema.parse(JSON.parse(text));
-    } catch {
-      throw new ApiError(502, "ai_bad_output", "AI 응답이 정해진 형식이 아닙니다.");
-    }
+  try {
+    return o.schema.parse(JSON.parse(text));
+  } catch {
+    throw new ApiError(502, "ai_bad_output", "AI 응답이 정해진 형식이 아닙니다.");
   }
-  return { message, parsed: parsed as CallResult<S>["parsed"] };
 }
