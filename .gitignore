@@ -17,6 +17,6 @@ node_modules/
 .next/
 .vercel/
 
-# Next.js 생성물
+# TypeScript
 next-env.d.ts
 *.tsbuildinfo
