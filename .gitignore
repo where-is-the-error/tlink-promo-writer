@@ -1,0 +1,18 @@
+# 도구 상태·로컬 설정
+.omc/
+.claude/
+.vibe-wise/
+
+# 비밀값
+.env
+.env.*
+!.env.example
+
+# 회사 원본 자료와 쪽 분할본 (저장소에 올리지 않음)
+data/raw/
+data/pages/
+
+# 빌드 산출물
+node_modules/
+.next/
+.vercel/
