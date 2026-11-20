@@ -2,13 +2,14 @@ import type { NextRequest } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
 import { ApiError } from "./http";
-import { env } from "./db";
+import { env, isLocal } from "./db";
 
 /**
  * 로그인 확인. `Authorization: Bearer <access_token>` 또는 Supabase 세션 쿠키를 받는다.
  * ALLOWED_USER_EMAIL이 설정돼 있으면 그 계정만 통과시킨다(MVP는 사용자 1명).
  */
 export async function requireUser(req: NextRequest) {
+  if (isLocal()) return null; // 로컬 모드: 로그인 확인 생략
   const url = env("NEXT_PUBLIC_SUPABASE_URL");
   const anon = env("NEXT_PUBLIC_SUPABASE_ANON_KEY");
   const header = req.headers.get("authorization");

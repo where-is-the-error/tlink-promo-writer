@@ -20,3 +20,5 @@ node_modules/
 # TypeScript
 next-env.d.ts
 *.tsbuildinfo
+
+.local-data/
